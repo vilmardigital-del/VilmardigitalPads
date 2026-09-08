@@ -18,6 +18,7 @@ import {
   CheckCircle2,
   X,
   Loader2,
+  Square,
 } from 'lucide-react';
 import { User } from 'firebase/auth';
 import { initAuth, googleSignIn, logout, getAccessToken } from './services/auth';
@@ -448,22 +449,12 @@ export default function App() {
         activeCount={activePadIds.length}
         activeColor={activeColor}
         showMetronome={showMetronome}
-        presetCount={presetCount}
-        user={user}
-        isConnectingDrive={isConnectingDrive}
-        isSyncingDrive={isSyncingDrive}
-        onConnectDrive={handleConnectDrive}
-        onDisconnectDrive={handleDisconnectDrive}
-        onSyncAllToDrive={handleSyncAllToDrive}
         onToggleMetronome={() => setShowMetronome(!showMetronome)}
-        onOpenUpload={() => setIsUploadOpen(true)}
-        onStopAll={() => audioEngine.stopAllPads()}
         onSettingsChange={handleSettingsChange}
-        onDeleteAllPresets={handleDeleteAllPresets}
       />
 
       {/* Main Studio Pad Board */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 lg:px-8 py-6 flex flex-col gap-6">
+      <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-3 sm:py-4 flex flex-col gap-3 sm:gap-4">
         {/* Metronome Collapsible Tool for Guitarists */}
         {showMetronome && (
           <div className="animate-in fade-in slide-in-from-top-3 duration-200">
@@ -472,7 +463,7 @@ export default function App() {
         )}
 
         {/* Violão & Pad Board Quick Status Banner */}
-        <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 rounded-2xl bg-zinc-900/50 border border-zinc-800/80 text-xs">
+        <div className="flex flex-wrap items-center justify-between gap-2.5 p-2.5 sm:p-3 rounded-xl bg-zinc-900/50 border border-zinc-800/80 text-xs">
           <div className="flex items-center gap-2 text-zinc-300">
             <Guitar className="w-4 h-4 text-amber-400 flex-shrink-0" />
             <span className="font-semibold text-zinc-200">Acompanhamento de Violão:</span>
@@ -481,7 +472,21 @@ export default function App() {
             </span>
           </div>
 
-          <div className="flex items-center gap-3 text-zinc-400 flex-wrap">
+          <div className="flex items-center gap-2.5 text-zinc-400 flex-wrap">
+            {/* Parar Pads (quando algum estiver ativo) */}
+            {activePadIds.length > 0 && (
+              <button
+                type="button"
+                onClick={() => audioEngine.stopAllPads()}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-rose-500/40 bg-rose-500/15 hover:bg-rose-500/30 text-rose-300 hover:text-white transition cursor-pointer shadow-sm animate-pulse"
+                title="Parar todos os pads com fade suave"
+              >
+                <Square className="w-3.5 h-3.5 fill-current" />
+                <span>Parar Pads ({activePadIds.length})</span>
+              </button>
+            )}
+
+            {/* Apagar Exemplos */}
             {presetCount > 0 && (
               <button
                 type="button"
@@ -497,7 +502,7 @@ export default function App() {
             <div className="hidden md:flex items-center gap-1.5">
               <Keyboard className="w-3.5 h-3.5 text-zinc-500" />
               <span className="font-mono bg-zinc-800 text-zinc-300 px-1.5 py-0.5 rounded text-[10px]">
-                Teclas 1 a 9
+                Espaço para parar
               </span>
             </div>
 

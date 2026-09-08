@@ -75,11 +75,11 @@ export const AudioVisualizer: React.FC<AudioVisualizerProps> = ({ isPlaying, act
   }, [isPlaying, activeColor]);
 
   return (
-    <div className="relative w-full h-8 flex items-center justify-center overflow-hidden rounded-md bg-zinc-950/60 border border-zinc-800/40">
+    <div className="relative w-full h-6 sm:h-7 flex items-center justify-center overflow-hidden rounded-lg bg-zinc-950/70 border border-zinc-800/60">
       <canvas
         ref={canvasRef}
-        width={360}
-        height={32}
+        width={240}
+        height={28}
         className="w-full h-full block opacity-90"
       />
     </div>

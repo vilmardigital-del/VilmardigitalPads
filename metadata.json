@@ -1,0 +1,6 @@
+{
+  "name": "Mesa de Pads para Violão",
+  "description": "Mesa de pads de áudio personalizável para acompanhamento de violão com suporte a upload, quadrados coloridos diferenciados e transição suave.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

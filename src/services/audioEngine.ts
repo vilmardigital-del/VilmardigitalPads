@@ -278,9 +278,14 @@ class AudioEngine {
   ) {
     if (!this.ctx) return;
 
-    // 1. Resolve live Object URL immediately
+    // 1. Resolve live Object URL or server stream URL immediately
     let url = pad.audioUrl;
     let ownedBlobUrl: string | null = null;
+
+    // If driveFileId exists, ensure we use the stream endpoint
+    if (pad.driveFileId && (!url || url.startsWith('blob:'))) {
+      url = `/api/drive-stream/${pad.driveFileId}`;
+    }
 
     if (!url) {
       if (pad.audioBlob instanceof Blob && pad.audioBlob.size > 0) {
@@ -290,6 +295,9 @@ class AudioEngine {
         const blob = new Blob([pad.audioData], { type: pad.mimeType || 'audio/mpeg' });
         url = URL.createObjectURL(blob);
         ownedBlobUrl = url;
+      } else {
+        // Try direct server audio endpoint if id exists
+        url = `/api/audio/${pad.id}`;
       }
     }
 
@@ -301,6 +309,7 @@ class AudioEngine {
 
     // 2. Instantiate native streaming HTML5 audio element
     const audioEl = new Audio();
+    audioEl.crossOrigin = 'anonymous';
     audioEl.src = url;
     audioEl.loop = true;
     audioEl.preload = 'auto';

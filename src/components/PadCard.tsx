@@ -6,6 +6,7 @@ interface PadCardProps {
   pad: PadItem;
   isPlaying: boolean;
   shortcutKey?: string;
+  isAdmin?: boolean;
   onTogglePlay: (pad: PadItem) => void;
   onEdit: (pad: PadItem) => void;
   onDelete: (pad: PadItem) => void;
@@ -16,6 +17,7 @@ export const PadCard: React.FC<PadCardProps> = ({
   pad,
   isPlaying,
   shortcutKey,
+  isAdmin = false,
   onTogglePlay,
   onEdit,
   onDelete,
@@ -97,30 +99,32 @@ export const PadCard: React.FC<PadCardProps> = ({
         </div>
 
         {/* Action icons */}
-        <div className="flex items-center gap-1 opacity-70 group-hover:opacity-100 transition">
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onEdit(pad);
-            }}
-            className="p-1.5 rounded-lg bg-black/40 hover:bg-black/70 text-zinc-300 hover:text-white transition"
-            title="Editar nome / cor / tom"
-          >
-            <Edit3 className="w-3.5 h-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onDelete(pad);
-            }}
-            className="p-1.5 rounded-lg bg-black/40 hover:bg-rose-950/80 text-zinc-300 hover:text-rose-300 transition"
-            title={pad.isPreset ? 'Apagar este áudio de exemplo' : 'Excluir este pad'}
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-          </button>
-        </div>
+        {(isAdmin || !pad.isDriveSynced) && (
+          <div className="flex items-center gap-1 opacity-70 group-hover:opacity-100 transition">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onEdit(pad);
+              }}
+              className="p-1.5 rounded-lg bg-black/40 hover:bg-black/70 text-zinc-300 hover:text-white transition"
+              title="Editar nome / cor / tom"
+            >
+              <Edit3 className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDelete(pad);
+              }}
+              className="p-1.5 rounded-lg bg-black/40 hover:bg-rose-950/80 text-zinc-300 hover:text-rose-300 transition"
+              title={pad.isPreset ? 'Apagar este áudio de exemplo' : 'Excluir este pad'}
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Center Main Tap Area */}

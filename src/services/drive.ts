@@ -1,4 +1,5 @@
 import { PadItem } from '../types';
+import { getNextColor } from '../utils/colors';
 
 export const PADS_FOLDER_NAME = 'Mesa de Pads - Violão';
 const CATALOG_FILE_NAME = 'mesa_pads_catalog.json';
@@ -258,4 +259,112 @@ export async function saveCatalogToDrive(
       await makeFilePublic(accessToken, data.id);
     }
   }
+}
+
+/**
+ * Scans the Google Drive folder "Mesa de Pads - Violão", retrieves or parses all audio files,
+ * ensures they are public, and returns the full list of PadItem objects.
+ */
+export async function syncPadsFromDrive(accessToken: string): Promise<PadItem[]> {
+  const folderId = await getOrCreatePadsFolder(accessToken);
+
+  // 1. Try reading existing catalog
+  let catalogPads: PadItem[] = [];
+  try {
+    const query = encodeURIComponent(
+      `mimeType != 'application/vnd.google-apps.folder' and name = '${CATALOG_FILE_NAME}' and '${folderId}' in parents and trashed = false`
+    );
+    const catSearch = await fetch(`https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name)`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (catSearch.ok) {
+      const catData = await catSearch.json();
+      if (catData.files && catData.files.length > 0) {
+        const catFileId = catData.files[0].id;
+        const catRes = await fetch(`https://www.googleapis.com/drive/v3/files/${catFileId}?alt=media`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        if (catRes.ok) {
+          const parsed = await catRes.json();
+          if (Array.isArray(parsed.pads)) {
+            catalogPads = parsed.pads;
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Aviso ao ler catálogo do Drive:', err);
+  }
+
+  // 2. Search for all audio files in the folder
+  const audioQuery = encodeURIComponent(
+    `'${folderId}' in parents and trashed = false and (mimeType contains 'audio/' or name contains '.mp3' or name contains '.wav' or name contains '.m4a' or name contains '.ogg' or name contains '.aac')`
+  );
+  const filesSearch = await fetch(
+    `https://www.googleapis.com/drive/v3/files?q=${audioQuery}&fields=files(id,name,mimeType,size)&pageSize=100`,
+    {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    }
+  );
+
+  const mergedMap = new Map<string, PadItem>();
+  catalogPads.forEach((p) => {
+    if (p.driveFileId) {
+      mergedMap.set(p.driveFileId, p);
+    }
+  });
+
+  if (filesSearch.ok) {
+    const filesData = await filesSearch.json();
+    const driveFiles: Array<{ id: string; name: string; mimeType: string }> = filesData.files || [];
+
+    for (let i = 0; i < driveFiles.length; i++) {
+      const f = driveFiles[i];
+      if (f.name === CATALOG_FILE_NAME) continue;
+
+      // Make sure it's public
+      try {
+        await makeFilePublic(accessToken, f.id);
+      } catch {}
+
+      if (!mergedMap.has(f.id)) {
+        // Parse key from filename like "[C] Worship Pad.mp3" or "Pad Dó C.mp3"
+        let detectedKey: string | undefined = undefined;
+        const keyMatch = f.name.match(/\[([A-G][b#]?)\]/i) || f.name.match(/\b([A-G][b#]?)\b/);
+        if (keyMatch) {
+          detectedKey = keyMatch[1].toUpperCase();
+        }
+
+        const colorScheme = getNextColor(mergedMap.size + i);
+        const cleanName = f.name.replace(/\.[^/.]+$/, '').replace(/\[[A-G][b#]?\]\s*/i, '').trim() || f.name;
+
+        mergedMap.set(f.id, {
+          id: `pad-drive-${f.id}`,
+          name: cleanName,
+          key: detectedKey,
+          color: colorScheme.hex,
+          textColor: colorScheme.textColor,
+          bgGradient: colorScheme.bgGradient,
+          activeBorderColor: colorScheme.activeBorderColor,
+          glowColor: colorScheme.glowColor,
+          audioUrl: `/api/drive-stream/${f.id}`,
+          driveFileId: f.id,
+          driveFolderId: folderId,
+          isDriveSynced: true,
+          mimeType: f.mimeType || 'audio/mpeg',
+          isPreset: false,
+          volume: 0.9,
+          createdAt: Date.now() + i,
+        });
+      }
+    }
+  }
+
+  const finalPads = Array.from(mergedMap.values());
+  // Save updated catalog to Drive
+  try {
+    await saveCatalogToDrive(accessToken, folderId, finalPads);
+  } catch {}
+
+  return finalPads;
 }

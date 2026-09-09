@@ -19,6 +19,10 @@ import {
   X,
   Loader2,
   Square,
+  ShieldCheck,
+  KeyRound,
+  RefreshCw,
+  Globe,
 } from 'lucide-react';
 import { User } from 'firebase/auth';
 import { initAuth, googleSignIn, logout, getAccessToken } from './services/auth';
@@ -27,7 +31,10 @@ import {
   uploadAudioToDrive,
   deleteFileFromDrive,
   saveCatalogToDrive,
+  syncPadsFromDrive,
 } from './services/drive';
+
+export const ADMIN_EMAIL = 'vilmardigital@gmail.com';
 
 export default function App() {
   const [pads, setPads] = useState<PadItem[]>([]);
@@ -45,6 +52,9 @@ export default function App() {
   const [isConnectingDrive, setIsConnectingDrive] = useState(false);
   const [isSyncingDrive, setIsSyncingDrive] = useState(false);
   const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'info' | 'error' } | null>(null);
+
+  // Checks whether the logged user is the administrator Vilmar Digital
+  const isAdmin = Boolean(user?.email && user.email.toLowerCase() === ADMIN_EMAIL.toLowerCase());
 
   const showToast = (text: string, type: 'success' | 'info' | 'error' = 'success') => {
     setToastMessage({ text, type });
@@ -83,38 +93,25 @@ export default function App() {
           console.warn('API de pads compartilhados não acessível offline:', apiErr);
         }
 
-        const storedPads = await getAllStoredPads();
-
-        // Merge shared pads with locally stored pads
-        const padMap = new Map<string, PadItem>();
-
-        // First add presets if brand new visit and no local or server pads
-        const hasInitialized = localStorage.getItem('mesa_pads_initialized_v2');
-
-        if (!hasInitialized && serverPads.length === 0 && (!storedPads || storedPads.length === 0)) {
-          INITIAL_PRESET_PADS.forEach((p) => padMap.set(p.id, p));
-          for (const p of INITIAL_PRESET_PADS) {
+        // If the shared server collection contains pads (added by administrator vilmardigital@gmail.com),
+        // give all visitors immediate access to them!
+        if (serverPads && serverPads.length > 0) {
+          setPads(serverPads);
+          // Cache server pads locally for fast offline access
+          for (const p of serverPads) {
             await savePadToDB(p);
           }
-          localStorage.setItem('mesa_pads_initialized_v2', 'true');
-        }
-
-        // Add locally stored pads
-        if (storedPads && storedPads.length > 0) {
-          storedPads.forEach((p) => padMap.set(p.id, p));
-        }
-
-        // Add or overwrite with server shared pads (they have Google Drive stream URLs)
-        if (serverPads && serverPads.length > 0) {
-          serverPads.forEach((p) => padMap.set(p.id, p));
-        }
-
-        const merged = Array.from(padMap.values());
-        setPads(merged);
-
-        // Cache server pads locally for fast offline access
-        for (const p of serverPads) {
-          await savePadToDB(p);
+        } else {
+          // If server collection is not yet populated, check local DB or presets
+          const storedPads = await getAllStoredPads();
+          if (storedPads && storedPads.length > 0) {
+            setPads(storedPads);
+          } else {
+            setPads(INITIAL_PRESET_PADS);
+            for (const p of INITIAL_PRESET_PADS) {
+              await savePadToDB(p);
+            }
+          }
         }
       } catch (e) {
         console.warn('Erro ao carregar dados:', e);
@@ -207,7 +204,16 @@ export default function App() {
       const result = await googleSignIn();
       if (result) {
         setUser(result.user);
-        showToast(`Google Drive conectado com sucesso (${result.user.displayName || result.user.email})!`, 'success');
+        const email = (result.user.email || '').toLowerCase();
+        if (email === ADMIN_EMAIL.toLowerCase()) {
+          showToast(`Bem-vindo, Administrador Vilmar Digital! Sincronizando áudios do Google Drive...`, 'success');
+          const token = await getAccessToken();
+          if (token) {
+            await handleSyncDrivePads(token);
+          }
+        } else {
+          showToast(`Conectado como ${result.user.displayName || result.user.email}. O aplicativo está aberto para você tocar todos os áudios!`, 'info');
+        }
       }
     } catch (err: any) {
       console.error('Erro ao conectar ao Google Drive:', err);
@@ -222,9 +228,145 @@ export default function App() {
     try {
       await logout();
       setUser(null);
-      showToast('Desconectado do Google Drive', 'info');
+      showToast('Sessão encerrada', 'info');
     } catch (err) {
       console.error('Erro ao desconectar:', err);
+    }
+  };
+
+  // Scan and sync pads from Google Drive folder "Mesa de Pads - Violão"
+  const handleSyncDrivePads = async (customToken?: string) => {
+    setIsSyncingDrive(true);
+    try {
+      const token = customToken || (await getAccessToken());
+      if (!token) {
+        showToast('Faça login com a conta vilmardigital@gmail.com para sincronizar.', 'error');
+        return;
+      }
+
+      showToast('Varrendo pasta "Mesa de Pads - Violão" no Google Drive...', 'info');
+      const drivePads = await syncPadsFromDrive(token);
+
+      if (drivePads.length === 0) {
+        // If drive folder doesn't have audios yet, check if there are local pads to upload
+        await handleSyncAllToDrive();
+        return;
+      }
+
+      // Merge drive pads with current pads (giving preference to Drive metadata)
+      const mergedMap = new Map<string, PadItem>();
+      drivePads.forEach((p) => mergedMap.set(p.id, p));
+      pads.forEach((p) => {
+        if (!mergedMap.has(p.id)) {
+          mergedMap.set(p.id, p);
+        }
+      });
+
+      const updated = Array.from(mergedMap.values());
+      setPads(updated);
+
+      for (const p of updated) {
+        await savePadToDB(p);
+        // Pre-cache Google Drive files on server disk so every visitor gets instant playback
+        if (p.driveFileId) {
+          try {
+            fetch(`/api/drive-cache/${p.driveFileId}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ accessToken: token }),
+            });
+          } catch {}
+        }
+      }
+
+      // Publish to shared server list so ALL users across the world get them immediately
+      await fetch('/api/pads', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(updated),
+      });
+
+      showToast(`Sucesso! ${drivePads.length} pad(s) do Google Drive sincronizados e abertos para todos os usuários!`, 'success');
+    } catch (err: any) {
+      console.error('Erro ao sincronizar do Google Drive:', err);
+      showToast(`Erro na sincronização: ${err.message || 'Falha ao sincronizar'}`, 'error');
+    } finally {
+      setIsSyncingDrive(false);
+    }
+  };
+
+  // Publish the current pad board to the central server so all visitors get access to it
+  const [isPublishing, setIsPublishing] = useState(false);
+
+  const handlePublishToAll = async () => {
+    setIsPublishing(true);
+    try {
+      showToast('Publicando acervo para todos os usuários...', 'info');
+      const updatedPads = [...pads];
+
+      for (let i = 0; i < updatedPads.length; i++) {
+        const p = updatedPads[i];
+        if ((!p.audioUrl || p.audioUrl.startsWith('blob:')) && (p.audioBlob || p.audioData)) {
+          let blob = p.audioBlob;
+          if (!blob && p.audioData) {
+            blob = new Blob([p.audioData], { type: p.mimeType || 'audio/mpeg' });
+          }
+          if (blob) {
+            try {
+              const reader = new FileReader();
+              const b64Promise = new Promise<string>((resolve, reject) => {
+                reader.onload = () => {
+                  const res = reader.result as string;
+                  resolve(res.split(',')[1] || res);
+                };
+                reader.onerror = reject;
+                reader.readAsDataURL(blob!);
+              });
+              const b64 = await b64Promise;
+              const uploadRes = await fetch('/api/upload-audio', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: p.id, base64: b64, mimeType: p.mimeType }),
+              });
+              if (uploadRes.ok) {
+                const d = await uploadRes.json();
+                if (d.audioUrl) {
+                  updatedPads[i] = { ...p, audioUrl: d.audioUrl };
+                  await savePadToDB(updatedPads[i]);
+                }
+              }
+            } catch (upErr) {
+              console.warn('Aviso ao enviar áudio do pad:', upErr);
+            }
+          }
+        }
+      }
+
+      setPads(updatedPads);
+
+      const res = await fetch('/api/pads', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(updatedPads),
+      });
+
+      if (res.ok) {
+        showToast(
+          `Publicado! Todos os usuários que abrirem o aplicativo terão acesso imediato aos ${updatedPads.length} pads.`,
+          'success'
+        );
+      } else {
+        showToast('Erro ao salvar no servidor.', 'error');
+      }
+    } catch (err: any) {
+      console.error('Erro ao publicar:', err);
+      showToast('Erro ao publicar: ' + (err.message || ''), 'error');
+    } finally {
+      setIsPublishing(false);
     }
   };
 
@@ -279,7 +421,9 @@ export default function App() {
       // Save to shared server list so all users can access immediately
       await fetch('/api/pads', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify(updatedPads),
       });
 
@@ -310,7 +454,9 @@ export default function App() {
       try {
         await fetch('/api/pads', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+          },
           body: JSON.stringify(updated),
         });
       } catch (err) {
@@ -337,7 +483,9 @@ export default function App() {
       try {
         await fetch('/api/pads', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+          },
           body: JSON.stringify(updated),
         });
       } catch {}
@@ -374,7 +522,9 @@ export default function App() {
 
       // Remove from server shared pads
       try {
-        await fetch(`/api/pads/${pad.id}`, { method: 'DELETE' });
+        await fetch(`/api/pads/${pad.id}`, {
+          method: 'DELETE',
+        });
       } catch {}
 
       // Remove from local state and DB
@@ -409,7 +559,9 @@ export default function App() {
     try {
       await fetch('/api/pads', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify(remaining),
       });
     } catch {}
@@ -462,61 +614,139 @@ export default function App() {
           </div>
         )}
 
-        {/* Violão & Pad Board Quick Status Banner */}
-        <div className="flex flex-wrap items-center justify-between gap-2.5 p-2.5 sm:p-3 rounded-xl bg-zinc-900/50 border border-zinc-800/80 text-xs">
-          <div className="flex items-center gap-2 text-zinc-300">
-            <Guitar className="w-4 h-4 text-amber-400 flex-shrink-0" />
-            <span className="font-semibold text-zinc-200">Acompanhamento de Violão:</span>
-            <span className="hidden sm:inline text-zinc-400">
-              Escolha o tom da canção. Ao trocar de pad, o som transita com fade suave contínuo.
-            </span>
-          </div>
-
-          <div className="flex items-center gap-2.5 text-zinc-400 flex-wrap">
-            {/* Parar Pads (quando algum estiver ativo) */}
-            {activePadIds.length > 0 && (
-              <button
-                type="button"
-                onClick={() => audioEngine.stopAllPads()}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-rose-500/40 bg-rose-500/15 hover:bg-rose-500/30 text-rose-300 hover:text-white transition cursor-pointer shadow-sm animate-pulse"
-                title="Parar todos os pads com fade suave"
-              >
-                <Square className="w-3.5 h-3.5 fill-current" />
-                <span>Parar Pads ({activePadIds.length})</span>
-              </button>
-            )}
-
-            {/* Apagar Exemplos */}
-            {presetCount > 0 && (
-              <button
-                type="button"
-                onClick={handleDeleteAllPresets}
-                className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-lg border border-rose-800/50 bg-rose-950/30 hover:bg-rose-900/60 hover:border-rose-600 text-rose-300 hover:text-white transition cursor-pointer"
-                title="Apagar todos os áudios e pads de exemplo"
-              >
-                <Trash2 className="w-3.5 h-3.5 text-rose-400" />
-                <span>Apagar Exemplos ({presetCount})</span>
-              </button>
-            )}
-
-            <div className="hidden md:flex items-center gap-1.5">
-              <Keyboard className="w-3.5 h-3.5 text-zinc-500" />
-              <span className="font-mono bg-zinc-800 text-zinc-300 px-1.5 py-0.5 rounded text-[10px]">
-                Espaço para parar
+        {/* Open App & Pad Board Quick Status Banner */}
+        <div className="flex flex-col gap-2 p-3 rounded-xl bg-zinc-900/50 border border-zinc-800/80 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2.5">
+            <div className="flex items-center gap-2 text-zinc-300 flex-wrap">
+              <Guitar className="w-4 h-4 text-amber-400 flex-shrink-0" />
+              <span className="font-bold text-zinc-100">Mesa Aberta a Todos os Músicos</span>
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                <Cloud className="w-3 h-3" />
+                <span>Acervo Oficial: Vilmar Digital</span>
               </span>
             </div>
 
-            <div className="flex items-center gap-1.5 font-medium">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              <span className="text-zinc-300">{pads.length} Quadrados</span>
-            </div>
+            <div className="flex items-center gap-2 text-zinc-400 flex-wrap">
+              {/* Parar Pads (quando algum estiver ativo) */}
+              {activePadIds.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => audioEngine.stopAllPads()}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-rose-500/40 bg-rose-500/15 hover:bg-rose-500/30 text-rose-300 hover:text-white transition cursor-pointer shadow-sm animate-pulse"
+                  title="Parar todos os pads com fade suave"
+                >
+                  <Square className="w-3.5 h-3.5 fill-current" />
+                  <span>Parar Pads ({activePadIds.length})</span>
+                </button>
+              )}
 
-            {pads.some((p) => p.isDriveSynced || p.driveFileId) && (
-              <div className="flex items-center gap-1 text-[11px] text-emerald-400 font-semibold bg-emerald-950/40 border border-emerald-500/30 px-2 py-0.5 rounded-full">
-                <Cloud className="w-3 h-3" />
-                <span>Drive Ativo para Todos</span>
+              {/* Pad Count badge */}
+              <div className="flex items-center gap-1.5 font-medium px-2 py-1 rounded-lg bg-zinc-800/60 border border-zinc-700/40 text-zinc-300">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span>{pads.length} Quadrados</span>
               </div>
-            )}
+
+              {/* Keyboard tip */}
+              <div className="hidden lg:flex items-center gap-1.5 text-zinc-400">
+                <Keyboard className="w-3.5 h-3.5 text-zinc-500" />
+                <span className="font-mono bg-zinc-800 text-zinc-300 px-1.5 py-0.5 rounded text-[10px]">
+                  Espaço para parar
+                </span>
+              </div>
+
+              {/* Admin or Visitor Actions */}
+              {isAdmin ? (
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <div className="flex items-center gap-1 px-2 py-1 text-xs font-bold rounded-lg bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                    <ShieldCheck className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Admin: Vilmar</span>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handlePublishToAll}
+                    disabled={isPublishing}
+                    className="flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded-lg border border-cyan-500/40 bg-cyan-950/40 hover:bg-cyan-900/60 text-cyan-300 hover:text-white transition cursor-pointer disabled:opacity-50"
+                    title="Publicar acervo de pads para que todos os usuários que abrirem o aplicativo tenham acesso"
+                  >
+                    {isPublishing ? (
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                    ) : (
+                      <Globe className="w-3 h-3 text-cyan-400" />
+                    )}
+                    <span>{isPublishing ? 'Publicando...' : 'Publicar p/ Todos'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handleSyncDrivePads()}
+                    disabled={isSyncingDrive}
+                    className="flex items-center gap-1 px-2 py-1 text-xs font-semibold rounded-lg border border-emerald-500/40 bg-emerald-950/40 hover:bg-emerald-900/60 text-emerald-300 hover:text-white transition cursor-pointer disabled:opacity-50"
+                    title="Sincronizar áudios da pasta do Google Drive"
+                  >
+                    {isSyncingDrive ? (
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                    ) : (
+                      <RefreshCw className="w-3 h-3 text-emerald-400" />
+                    )}
+                    <span>{isSyncingDrive ? 'Sincronizando...' : 'Sincronizar Drive'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setIsUploadOpen(true)}
+                    className="flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded-lg bg-emerald-500 hover:bg-emerald-400 text-zinc-950 transition cursor-pointer"
+                  >
+                    <span>+ Novo Pad</span>
+                  </button>
+
+                  {presetCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={handleDeleteAllPresets}
+                      className="flex items-center gap-1 px-2 py-1 text-xs font-semibold rounded-lg border border-rose-800/50 bg-rose-950/30 hover:bg-rose-900/60 text-rose-300 hover:text-white transition cursor-pointer"
+                      title="Apagar áudios de exemplo"
+                    >
+                      <Trash2 className="w-3 h-3 text-rose-400" />
+                      <span>Exemplos ({presetCount})</span>
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={handleDisconnectDrive}
+                    className="px-2 py-1 text-xs font-medium text-zinc-400 hover:text-zinc-200 transition cursor-pointer"
+                    title="Desconectar"
+                  >
+                    Sair
+                  </button>
+                </div>
+              ) : user ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] text-zinc-400">
+                    Conectado: <strong className="text-zinc-300">{user.email}</strong>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleDisconnectDrive}
+                    className="px-2 py-0.5 text-xs text-zinc-400 hover:text-zinc-200 rounded border border-zinc-800 hover:bg-zinc-800 transition cursor-pointer"
+                  >
+                    Sair
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleConnectDrive}
+                  disabled={isConnectingDrive}
+                  className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-lg border border-zinc-800 bg-zinc-900/80 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition cursor-pointer"
+                  title="Acesso reservado ao administrador Vilmar Digital para sincronizar áudios oficiais"
+                >
+                  <KeyRound className="w-3.5 h-3.5 text-zinc-500" />
+                  <span>{isConnectingDrive ? 'Conectando...' : 'Acesso Admin (Vilmar)'}</span>
+                </button>
+              )}
+            </div>
           </div>
         </div>
 
@@ -525,6 +755,7 @@ export default function App() {
           <PadGrid
             pads={pads}
             activePadIds={activePadIds}
+            isAdmin={isAdmin}
             onTogglePlay={handleTogglePlay}
             onEdit={handleEditPad}
             onDelete={handleDeletePadPrompt}
@@ -537,7 +768,7 @@ export default function App() {
         <footer className="mt-8 pt-4 border-t border-zinc-900 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-zinc-500">
           <div className="flex items-center gap-2">
             <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-            <span>Pads armazenados no Google Drive podem ser ouvidos e executados por todos os usuários na mesa.</span>
+            <span>Aplicativo aberto para todos os usuários com áudios gerenciados por Vilmar Digital ({ADMIN_EMAIL}).</span>
           </div>
         </footer>
       </main>
@@ -547,6 +778,7 @@ export default function App() {
         isOpen={isUploadOpen}
         existingPadsCount={pads.length}
         isDriveConnected={!!user}
+        isAdmin={isAdmin}
         onConnectDrive={handleConnectDrive}
         onClose={() => setIsUploadOpen(false)}
         onPadsAdded={handlePadsAdded}

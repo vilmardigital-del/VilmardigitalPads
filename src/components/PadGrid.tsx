@@ -6,6 +6,7 @@ import { PadCard } from './PadCard';
 interface PadGridProps {
   pads: PadItem[];
   activePadIds: string[];
+  isAdmin?: boolean;
   onTogglePlay: (pad: PadItem) => void;
   onEdit: (pad: PadItem) => void;
   onDelete: (pad: PadItem) => void;
@@ -18,6 +19,7 @@ const SHORTCUT_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 'Q', 'W
 export const PadGrid: React.FC<PadGridProps> = ({
   pads,
   activePadIds,
+  isAdmin = false,
   onTogglePlay,
   onEdit,
   onDelete,
@@ -59,6 +61,7 @@ export const PadGrid: React.FC<PadGridProps> = ({
               pad={pad}
               isPlaying={isPlaying}
               shortcutKey={shortcut}
+              isAdmin={isAdmin}
               onTogglePlay={onTogglePlay}
               onEdit={onEdit}
               onDelete={onDelete}

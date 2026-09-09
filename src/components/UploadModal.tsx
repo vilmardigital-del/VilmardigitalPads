@@ -9,6 +9,7 @@ interface UploadModalProps {
   isOpen: boolean;
   existingPadsCount: number;
   isDriveConnected?: boolean;
+  isAdmin?: boolean;
   onConnectDrive?: () => void;
   onClose: () => void;
   onPadsAdded: (newPads: PadItem[]) => void;
@@ -28,6 +29,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
   isOpen,
   existingPadsCount,
   isDriveConnected = false,
+  isAdmin = false,
   onConnectDrive,
   onClose,
   onPadsAdded,
@@ -210,7 +212,40 @@ export const UploadModal: React.FC<UploadModalProps> = ({
         let isDriveSynced = false;
         let streamUrl = objectUrl;
 
-        // Upload to Google Drive if connected and active
+        // 1. Upload audio to server disk for universal access by all users
+        try {
+          setProcessingStatus(`Disponibilizando áudio ${idx + 1}/${selectedFiles.length} para todos os usuários...`);
+          const reader = new FileReader();
+          const base64Promise = new Promise<string>((resolve, reject) => {
+            reader.onload = () => {
+              const res = reader.result as string;
+              const b64 = res.split(',')[1] || res;
+              resolve(b64);
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(item.file);
+          });
+          const base64Data = await base64Promise;
+          const serverUploadRes = await fetch('/api/upload-audio', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              id: padId,
+              base64: base64Data,
+              mimeType: item.file.type || 'audio/mpeg',
+            }),
+          });
+          if (serverUploadRes.ok) {
+            const data = await serverUploadRes.json();
+            if (data.audioUrl) {
+              streamUrl = data.audioUrl;
+            }
+          }
+        } catch (uploadServerErr) {
+          console.warn('Erro ao enviar áudio ao servidor:', uploadServerErr);
+        }
+
+        // 2. Upload to Google Drive if connected and active
         if (token && driveFolderId) {
           setProcessingStatus(`Salvando ${idx + 1}/${selectedFiles.length} no Google Drive...`);
           try {
@@ -223,7 +258,17 @@ export const UploadModal: React.FC<UploadModalProps> = ({
               driveFolderId
             );
             driveFileId = uploadRes.fileId;
-            streamUrl = uploadRes.streamUrl;
+            // Also cache file on server using the admin's token
+            try {
+              await fetch(`/api/drive-cache/${uploadRes.fileId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ accessToken: token }),
+              });
+            } catch {}
+            if (!streamUrl.startsWith('/api/audio')) {
+              streamUrl = uploadRes.streamUrl;
+            }
             isDriveSynced = true;
           } catch (uploadErr) {
             console.error('Falha ao enviar áudio individual para o Drive:', uploadErr);
@@ -307,15 +352,21 @@ export const UploadModal: React.FC<UploadModalProps> = ({
               <Cloud className="w-4 h-4" />
             </div>
             <div className="text-left">
-              <div className="text-xs font-semibold text-zinc-200">Armazenamento no Google Drive</div>
+              <div className="text-xs font-semibold text-zinc-200">
+                {isAdmin
+                  ? 'Drive Oficial de Vilmar Digital (Público)'
+                  : 'Armazenamento de Áudios'}
+              </div>
               <div className="text-[11px] text-zinc-400">
-                {isDriveConnected
-                  ? 'Os áudios serão salvos no seu Drive e todos os visitantes da mesa poderão utilizá-los'
-                  : 'Conecte sua conta Google para salvar no Drive e disponibilizar para todos'}
+                {isAdmin
+                  ? 'Como Administrador, seus áudios serão enviados ao seu Google Drive e abertos publicamente para todos os usuários.'
+                  : isDriveConnected
+                  ? 'Áudios salvos na sua conta do Google Drive.'
+                  : 'O aplicativo está aberto com o acervo de Vilmar Digital. Novos áudios locais funcionarão na sua sessão.'}
               </div>
             </div>
           </div>
-          {isDriveConnected ? (
+          {isAdmin && isDriveConnected ? (
             <label className="flex items-center gap-2 cursor-pointer text-xs font-semibold text-emerald-400 flex-shrink-0">
               <input
                 type="checkbox"
@@ -323,16 +374,17 @@ export const UploadModal: React.FC<UploadModalProps> = ({
                 onChange={(e) => setSaveToDrive(e.target.checked)}
                 className="w-4 h-4 rounded border-zinc-700 text-emerald-500 focus:ring-0 focus:ring-offset-0 bg-zinc-900 cursor-pointer"
               />
-              <span>Salvar no Drive</span>
+              <span>Publicar no Drive</span>
             </label>
           ) : (
+            !isDriveConnected &&
             onConnectDrive && (
               <button
                 type="button"
                 onClick={onConnectDrive}
                 className="px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 transition cursor-pointer flex-shrink-0"
               >
-                Conectar
+                Login Vilmar
               </button>
             )
           )}
